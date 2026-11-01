@@ -10,7 +10,10 @@
  *     DC        → GPIO 1
  *     CS        → GPIO 4
  *     LED       → GPIO 3
- *     T_CS      → GPIO 5   (táctil, aún sin usar)
+ *     T_CS      → GPIO 5   (táctil)
+ *     T_CLK     → GPIO 6   (táctil)
+ *     T_DIN     → GPIO 7   (táctil)
+ *     T_DO      → GPIO 20  (táctil)
  *     VCC       → 3.3
  *     GND       → G
  *
@@ -76,6 +79,9 @@ uint8_t  animSpeed    = 1;   // 1=slow(default) 2=normal 3=fast
 
 uint16_t animBgColor  = 0;   // background for eye/logo animations
 uint16_t drawBgColor  = 0;   // background for canvas
+uint16_t penColor     = 0;   // último color de lápiz usado desde la web (negro)
+bool     canvasActive = false; // lienzo abierto desde la web → el dedo dibuja
+bool     infoScreen   = true;  // aún se ve la pantalla de datos WiFi del arranque
 
 // ── Terminal ──────────────────────────────────────────────────
 #define TERM_COLS      21   // más ancho: (320 - 8 - 54) / 12
@@ -540,6 +546,138 @@ void animLogoReveal() {
 }
 
 // ═════════════════════════════════════════════════════════════
+//  TÁCTIL — XPT2046 leído por software en pines propios
+//  (a cada pin del ESP32 solo le cabe un Dupont, así que no
+//   comparte SCK/MOSI con la pantalla)
+// ═════════════════════════════════════════════════════════════
+
+#define T_CS_PIN   5
+#define T_CLK_PIN  6
+#define T_DIN_PIN  7
+#define T_DO_PIN   20
+
+// Calibración: valores en bruto (0–4095) que da el táctil en cada borde.
+// Se ajustan con lo que sale en el Serial Monitor al tocar las esquinas.
+#define TS_SWAP_XY   true   // la X de la pantalla sale de la Y del táctil
+#define TS_X_LEFT    300    // borde izquierdo
+#define TS_X_RIGHT   3800   // borde derecho
+#define TS_Y_TOP     300    // borde superior
+#define TS_Y_BOTTOM  3800   // borde inferior
+#define TS_Z_MIN     400    // presión mínima para contar como toque
+
+bool          wasTouched    = false;
+unsigned long lastTouchPoll = 0;
+unsigned long lastReleaseMs = 0;
+unsigned long lastTouchWarn = 0;
+int16_t       lastDrawX = -1, lastDrawY = -1;
+
+void touchBegin() {
+  pinMode(T_CS_PIN,  OUTPUT); digitalWrite(T_CS_PIN,  HIGH);
+  pinMode(T_CLK_PIN, OUTPUT); digitalWrite(T_CLK_PIN, LOW);
+  pinMode(T_DIN_PIN, OUTPUT); digitalWrite(T_DIN_PIN, LOW);
+  pinMode(T_DO_PIN,  INPUT);
+}
+
+// Envía un comando de 8 bits al XPT2046 y lee su respuesta de 12 bits
+uint16_t touchCmd(uint8_t cmd) {
+  for (int8_t i = 7; i >= 0; i--) {
+    digitalWrite(T_DIN_PIN, (cmd >> i) & 1);
+    digitalWrite(T_CLK_PIN, HIGH); delayMicroseconds(1);
+    digitalWrite(T_CLK_PIN, LOW);  delayMicroseconds(1);
+  }
+  uint16_t v = 0;
+  for (int8_t i = 11; i >= 0; i--) {
+    digitalWrite(T_CLK_PIN, HIGH); delayMicroseconds(1);
+    digitalWrite(T_CLK_PIN, LOW);  delayMicroseconds(1);
+    v |= (uint16_t)digitalRead(T_DO_PIN) << i;
+  }
+  return v;
+}
+
+// true si hay un dedo; devuelve la posición y la presión en bruto
+bool touchRead(int &rx, int &ry, int &rz) {
+  digitalWrite(T_CS_PIN, LOW);
+  const int z1 = touchCmd(0xB0);
+  const int z2 = touchCmd(0xC0);
+
+  // Lecturas imposibles = cable suelto o mal puesto en T_DO / T_CLK / T_DIN
+  if (z1 >= 4095 || z2 <= 0) {
+    digitalWrite(T_CS_PIN, HIGH);
+    if (millis() - lastTouchWarn > 5000) {
+      lastTouchWarn = millis();
+      Serial.printf("Tactil: lectura no valida (z1=%d z2=%d). Revisa T_CLK, T_DIN y T_DO\n", z1, z2);
+    }
+    return false;
+  }
+
+  rz = z1 + 4095 - z2;
+  if (rz < TS_Z_MIN) { digitalWrite(T_CS_PIN, HIGH); return false; }
+
+  touchCmd(0xD0);                       // la primera lectura es más ruidosa
+  long sx = 0, sy = 0;
+  for (uint8_t i = 0; i < 4; i++) { sx += touchCmd(0xD0); sy += touchCmd(0x90); }
+  digitalWrite(T_CS_PIN, HIGH);
+  rx = sx / 4;
+  ry = sy / 4;
+  return true;
+}
+
+void touchToScreen(int rx, int ry, int16_t &sx, int16_t &sy) {
+  const int a = TS_SWAP_XY ? ry : rx;   // eje del táctil que va a la X de la pantalla
+  const int b = TS_SWAP_XY ? rx : ry;
+  sx = constrain(map(a, TS_X_LEFT, TS_X_RIGHT,  0, DISP_W - 1), 0, DISP_W - 1);
+  sy = constrain(map(b, TS_Y_TOP,  TS_Y_BOTTOM, 0, DISP_H - 1), 0, DISP_H - 1);
+}
+
+// Un toque cambia de vista: ojos → squish → reloj → ojos…
+void nextViewByTouch() {
+  if (termMode) return;                 // el terminal se maneja desde el móvil
+  if (infoScreen) {
+    infoScreen = false;
+    currentView = VIEW_EYES_NORMAL; animNormalEyes(); return;
+  }
+  switch (currentView) {
+    case VIEW_EYES_NORMAL: currentView = VIEW_EYES_SQUISH; animSquishEyes();     break;
+    case VIEW_EYES_SQUISH: currentView = VIEW_CLOCK;       drawClockView(true);  break;
+    default:               currentView = VIEW_EYES_NORMAL; animNormalEyes();     break;
+  }
+}
+
+void handleTouch() {
+  if (busy || millis() - lastTouchPoll < 20) return;
+  lastTouchPoll = millis();
+
+  int rx = 0, ry = 0, rz = 0;
+  const bool touched = touchRead(rx, ry, rz);
+
+  if (touched) {
+    int16_t sx, sy;
+    touchToScreen(rx, ry, sx, sy);
+
+    if (!wasTouched) {
+      Serial.printf("Toque: bruto x=%d y=%d z=%d -> pantalla x=%d y=%d\n", rx, ry, rz, sx, sy);
+    }
+
+    if (canvasActive) {                 // lienzo abierto: dibujar con el dedo
+      if (lastDrawX >= 0) {
+        tft.drawLine(lastDrawX, lastDrawY, sx, sy, penColor);
+        tft.drawLine(lastDrawX + 1, lastDrawY, sx + 1, sy, penColor);
+        tft.drawLine(lastDrawX, lastDrawY + 1, sx, sy + 1, penColor);
+      } else {
+        tft.fillCircle(sx, sy, 2, penColor);
+      }
+      lastDrawX = sx; lastDrawY = sy;
+    } else if (!wasTouched && millis() - lastReleaseMs > 150) {
+      nextViewByTouch();                // toque nuevo → siguiente vista
+    }
+  } else if (wasTouched) {
+    lastReleaseMs = millis();
+    lastDrawX = -1;
+  }
+  wasTouched = touched;
+}
+
+// ═════════════════════════════════════════════════════════════
 //  WEB PAGE
 // ═════════════════════════════════════════════════════════════
 const char INDEX_HTML[] PROGMEM = R"rawhtml(
@@ -998,6 +1136,7 @@ void routeCmd() {
   }
 
   server.send(200, "application/json", "{\"ok\":1}");
+  infoScreen = false;
   switch (c) {
     case 'w': currentView = VIEW_EYES_NORMAL; animNormalEyes(); break;
     case 's': currentView = VIEW_EYES_SQUISH; animSquishEyes(); break;
@@ -1042,6 +1181,7 @@ void routeRedraw() {
 
 void routeCanvas() {
   const bool on = server.hasArg("on") && server.arg("on") == "1";
+  canvasActive = on; infoScreen = false;
   if (on) { currentView = VIEW_DRAW; tft.fillScreen(drawBgColor); }
   server.send(200, "application/json", "{\"ok\":1}");
 }
@@ -1051,6 +1191,7 @@ void routeDrawClear() {
   drawBgColor = hexToRgb565(bg);
   animBgColor = drawBgColor;  // keep in sync
   currentView = VIEW_DRAW; termMode = false;
+  canvasActive = true; infoScreen = false;
   tft.fillScreen(drawBgColor);
   server.send(200, "application/json", "{\"ok\":1}");
 }
@@ -1062,6 +1203,7 @@ void routeDrawStroke() {
   const uint16_t color = hexToRgb565(server.arg("pen"));
   const String   data  = server.arg("pts");
   currentView = VIEW_DRAW;
+  penColor = color;   // el dedo dibuja con el mismo color que el móvil
 
   struct Pt { int16_t x, y; };
   Pt prev = {-1, -1};
@@ -1126,6 +1268,7 @@ void setup() {
   setBacklight(true);
 
   SPI.begin(8, -1, 10, TFT_CS);   // SCK=8, MOSI=10
+  touchBegin();
   tft.begin();                    // ILI9341: begin() en vez de init(w, h)
   tft.setRotation(1);             // horizontal → 320×240
   initColours();
@@ -1186,6 +1329,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  handleTouch();
 
   // En la vista de reloj, actualiza una vez por segundo
   if (currentView == VIEW_CLOCK && !busy && millis() - lastClockTick >= 1000) {

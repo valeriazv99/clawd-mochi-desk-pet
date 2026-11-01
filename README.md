@@ -17,6 +17,7 @@ Adaptación del proyecto original [yousifamanuel/clawd-mochi](https://github.com
 - **Claude Code**: pantalla con terminal en la que escribes desde el móvil
 - **Canvas**: dibuja en la pantalla desde el móvil en tiempo real
 - **Clock**: hora y fecha sincronizadas por internet, con el cambio de hora de España automático
+- **Táctil**: un toque cambia de vista (ojos → squish → reloj). Con el lienzo abierto desde el móvil, puedes dibujar con el dedo
 - **Controles**: velocidad de animación, color de fondo y encender/apagar la pantalla
 
 ---
@@ -45,9 +46,12 @@ Los nombres de la izquierda son los que vienen impresos detrás de la pantalla. 
 | SCK | 8 |
 | LED | 3 |
 | T_CS | 5 |
-| SDO(MISO), T_CLK, T_DIN, T_DO, T_IRQ | sin conectar (de momento) |
+| T_CLK | 6 |
+| T_DIN | 7 |
+| T_DO | 20 |
+| SDO(MISO), T_IRQ | sin conectar |
 
-> El táctil necesitará conectar también **T_CLK**, **T_DIN** y **T_DO**. Está pendiente (ver roadmap).
+> El táctil va en pines propios, sin compartir SCK y MOSI con la pantalla, porque a cada pin del ESP32 solo le cabe un conector Dupont. El código lo lee por software: el chip táctil es lento y no necesita más.
 
 > El LED azul del ESP32-C3 parpadea mientras funciona: está conectado al GPIO 8, el mismo que usa la señal SCK. Es normal.
 
@@ -109,7 +113,7 @@ Si está conectado a tu WiFi de casa, la vista **Clock** muestra abajo su IP en 
 - [x] Cableado de la pantalla al ESP32-C3
 - [x] Prueba de pantalla (`graphicstest`)
 - [x] Código de Clawd Mochi adaptado a ILI9341 320×240
-- [ ] Táctil (XPT2046): cables T_CLK / T_DIN / T_DO y código
+- [ ] Táctil (XPT2046): en pruebas en la rama `issue-6-tactil`
 - [x] Reloj por WiFi (NTP)
 - [ ] Widget del tiempo (OpenWeatherMap)
 - [ ] Carcasa 3D en PLA naranja
