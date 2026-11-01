@@ -569,8 +569,12 @@ bool          wasTouched    = false;
 unsigned long lastTouchPoll = 0;
 unsigned long lastReleaseMs = 0;
 unsigned long lastTouchWarn = 0;
-int16_t       lastDrawX = -1, lastDrawY = -1;
+int16_t       lastDrawX = -1, lastDrawY = -1;   // último punto dibujado
+int16_t       pendX = 0, pendY = 0;             // punto pendiente de confirmar
+bool          havePend = false;
 uint8_t       strokeSamples = 0;   // lecturas desde que se apoyó el lápiz
+#define TS_MAX_SPREAD 120          // dispersión máx. entre las 8 lecturas (en bruto)
+#define TS_MAX_JUMP   50           // salto máx. entre puntos seguidos (px)
 
 void touchBegin() {
   pinMode(T_CS_PIN,  OUTPUT); digitalWrite(T_CS_PIN,  HIGH);
@@ -596,7 +600,9 @@ uint16_t touchCmd(uint8_t cmd) {
 }
 
 // true si hay un dedo; devuelve la posición y la presión en bruto
-bool touchRead(int &rx, int &ry, int &rz) {
+// noisy = true si hay dedo pero las lecturas no coinciden entre sí (posición poco fiable)
+bool touchRead(int &rx, int &ry, int &rz, bool &noisy) {
+  noisy = false;
   digitalWrite(T_CS_PIN, LOW);
   const int z1 = touchCmd(0xB0);
   const int z2 = touchCmd(0xC0);
@@ -616,10 +622,17 @@ bool touchRead(int &rx, int &ry, int &rz) {
 
   touchCmd(0xD0);                       // la primera lectura es más ruidosa
   long sx = 0, sy = 0;
-  for (uint8_t i = 0; i < 8; i++) { sx += touchCmd(0xD0); sy += touchCmd(0x90); }
+  int minX = 4095, maxX = 0, minY = 4095, maxY = 0;
+  for (uint8_t i = 0; i < 8; i++) {
+    const int x = touchCmd(0xD0), y = touchCmd(0x90);
+    sx += x; sy += y;
+    minX = min(minX, x); maxX = max(maxX, x);
+    minY = min(minY, y); maxY = max(maxY, y);
+  }
   digitalWrite(T_CS_PIN, HIGH);
   rx = sx / 8;                          // media de 8 lecturas = trazo más suave
   ry = sy / 8;
+  noisy = (maxX - minX > TS_MAX_SPREAD) || (maxY - minY > TS_MAX_SPREAD);
   return true;
 }
 
@@ -696,12 +709,29 @@ void checkHomeWifi() {
   }
 }
 
+bool farApart(int16_t ax, int16_t ay, int16_t bx, int16_t by) {
+  return abs(ax - bx) > TS_MAX_JUMP || abs(ay - by) > TS_MAX_JUMP;
+}
+
+// Dibuja un punto ya confirmado, unido al anterior si estaba cerca
+void drawCommit(int16_t x, int16_t y) {
+  if (lastDrawX < 0 || farApart(lastDrawX, lastDrawY, x, y)) {
+    tft.fillRect(x, y, 2, 2, penColor);       // inicio de trazo, mismo grosor que la línea
+  } else {
+    tft.drawLine(lastDrawX, lastDrawY, x, y, penColor);
+    tft.drawLine(lastDrawX + 1, lastDrawY, x + 1, y, penColor);
+    tft.drawLine(lastDrawX, lastDrawY + 1, x, y + 1, penColor);
+  }
+  lastDrawX = x; lastDrawY = y;
+}
+
 void handleTouch() {
   if (busy || millis() - lastTouchPoll < 20) return;
   lastTouchPoll = millis();
 
   int rx = 0, ry = 0, rz = 0;
-  const bool touched = touchRead(rx, ry, rz);
+  bool noisy = false;
+  const bool touched = touchRead(rx, ry, rz, noisy);
 
   if (touched) {
     int16_t sx, sy;
@@ -712,20 +742,13 @@ void handleTouch() {
     }
 
     if (canvasActive) {                 // lienzo abierto: dibujar con el dedo
-      strokeSamples++;
-      if (strokeSamples == 1) {
-        // Primera lectura al apoyar: hay poca presión y suele ser errónea → se descarta
-      } else if (lastDrawX < 0) {
-        tft.fillRect(sx, sy, 2, 2, penColor);   // inicio del trazo, mismo grosor que la línea
-        lastDrawX = sx; lastDrawY = sy;
-      } else if (abs(sx - lastDrawX) > 50 || abs(sy - lastDrawY) > 50) {
-        // Salto imposible en 20 ms: lectura errónea. No se une con línea
-        lastDrawX = sx; lastDrawY = sy;
-      } else {
-        tft.drawLine(lastDrawX, lastDrawY, sx, sy, penColor);
-        tft.drawLine(lastDrawX + 1, lastDrawY, sx + 1, sy, penColor);
-        tft.drawLine(lastDrawX, lastDrawY + 1, sx, sy + 1, penColor);
-        lastDrawX = sx; lastDrawY = sy;
+      // Cada punto queda "pendiente" y solo se dibuja cuando el siguiente
+      // confirma que estaba cerca. Así nunca se dibuja la lectura errónea
+      // de cuando se levanta el lápiz, ni picos sueltos a mitad de trazo.
+      if (strokeSamples < 255) strokeSamples++;
+      if (strokeSamples > 1 && !noisy) {   // la 1ª lectura al apoyar se descarta
+        if (havePend && !farApart(pendX, pendY, sx, sy)) drawCommit(pendX, pendY);
+        pendX = sx; pendY = sy; havePend = true;
       }
     } else if (!wasTouched && millis() - lastReleaseMs > 150) {
       nextViewByTouch();                // toque nuevo → siguiente vista
@@ -733,6 +756,7 @@ void handleTouch() {
   } else if (wasTouched) {
     lastReleaseMs = millis();
     lastDrawX = -1;
+    havePend = false;
     strokeSamples = 0;
   }
   wasTouched = touched;
