@@ -17,7 +17,9 @@
  *     VCC       → 3.3
  *     GND       → G
  *
- *   WiFi: "ClaWD-Mochi"  pw: clawd1234  → http://192.168.4.1
+ *   Se controla desde el navegador, en la IP que muestra al arrancar.
+ *   Si no conecta al WiFi de casa, crea la red de emergencia "ClaWD-Mochi"
+ *   (clave AP_PASSWORD de secrets.h) → http://192.168.4.1
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
@@ -29,6 +31,11 @@
 #include <WebServer.h>
 #include <time.h>
 #include "secrets.h"   // WIFI_SSID y WIFI_PASS de tu casa (no se sube a GitHub)
+
+#if !defined(AP_PASSWORD) || !defined(WEB_USER) || !defined(WEB_PASS)
+#error "Faltan datos en secrets.h: añade AP_PASSWORD, WEB_USER y WEB_PASS (mira secrets.h.example)"
+#endif
+static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD tiene que tener al menos 8 caracteres");
 
 // Zona horaria de España peninsular, con cambio de hora automático
 #define TZ_SPAIN "CET-1CEST,M3.5.0,M10.5.0/3"
@@ -43,7 +50,7 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
 // ── WiFi ──────────────────────────────────────────────────────
 const char* AP_SSID = "ClaWD-Mochi";
-const char* AP_PASS = "clawd1234";
+const char* AP_PASS = AP_PASSWORD;   // de secrets.h
 WebServer server(80);
 
 // ── Display ───────────────────────────────────────────────────
@@ -573,7 +580,7 @@ int16_t       lastDrawX = -1, lastDrawY = -1;   // último punto dibujado
 int16_t       pendX = 0, pendY = 0;             // punto pendiente de confirmar
 bool          havePend = false;
 uint8_t       strokeSamples = 0;   // lecturas desde que se apoyó el lápiz
-#define TS_MAX_SPREAD 120          // dispersión máx. entre las 8 lecturas (en bruto)
+#define TS_MAX_SPREAD 250          // dispersión máx. entre las 8 lecturas (en bruto)
 #define TS_MAX_JUMP   50           // salto máx. entre puntos seguidos (px)
 
 void touchBegin() {
@@ -658,9 +665,11 @@ void nextViewByTouch() {
 }
 
 // ═════════════════════════════════════════════════════════════
-//  WIFI DE CASA — estado, avisos y reintentos
-//  Si el ESP32 no logra conectarse, deja de buscar: mientras busca
-//  salta de canal y la red ClaWD-Mochi se vuelve inestable.
+//  WIFI
+//  - Normal: solo se conecta al WiFi de casa (modo STA).
+//  - Si en 20 s no lo consigue, crea la red de emergencia ClaWD-Mochi,
+//    con la clave AP_PASSWORD de secrets.h, y reintenta casa cada 5 min.
+//  Tener las dos redes a la vez reparte la radio y empeora la conexión.
 // ═════════════════════════════════════════════════════════════
 
 #define STA_TIMEOUT_MS  20000UL    // 20 s intentando conectar
@@ -668,7 +677,32 @@ void nextViewByTouch() {
 
 unsigned long staStartMs    = 0;
 bool          staGaveUp     = false;
+bool          apActive      = false;
 wl_status_t   lastStaStatus = WL_IDLE_STATUS;
+
+void drawInfoScreen() {
+  tft.fillScreen(C_DARKBG);
+  tft.fillRect(0, 0, DISP_W, 4, C_ORANGE);
+  tft.setTextSize(2);
+  if (WiFi.status() == WL_CONNECTED) {
+    tft.setTextColor(C_WHITE);  tft.setCursor(12, 20);  tft.print("WiFi de casa: OK");
+    tft.setCursor(12, 60);      tft.print("Abre en el navegador:");
+    tft.setTextColor(C_ORANGE); tft.setCursor(12, 88);
+    tft.print("http://"); tft.print(WiFi.localIP());
+  } else if (apActive) {
+    tft.setTextColor(C_WHITE);  tft.setCursor(12, 20);  tft.print("Sin WiFi de casa");
+    tft.setTextSize(1); tft.setTextColor(C_MUTED); tft.setCursor(12, 48);
+    tft.print("Red de emergencia (clave en secrets.h):");
+    tft.setTextSize(2); tft.setTextColor(C_WHITE); tft.setCursor(12, 62); tft.print(AP_SSID);
+    tft.setCursor(12, 100);     tft.print("Abre en el navegador:");
+    tft.setTextColor(C_ORANGE); tft.setCursor(12, 128); tft.print("http://192.168.4.1");
+  } else {
+    tft.setTextColor(C_WHITE);  tft.setCursor(12, 20);  tft.print("Conectando al WiFi");
+    tft.setCursor(12, 44);      tft.print("de casa...");
+  }
+  tft.setTextSize(1); tft.setTextColor(C_MUTED);
+  tft.setCursor(12, DISP_H - 20); tft.print("Toca la pantalla para empezar");
+}
 
 void startHomeWifi() {
   staStartMs = millis();
@@ -679,13 +713,50 @@ void startHomeWifi() {
   Serial.printf("WiFi casa: conectando a \"%s\"...\n", WIFI_SSID);
 }
 
+void startFallbackAP() {
+  if (apActive) return;
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(AP_SSID, AP_PASS);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  apActive = true;
+  Serial.printf("Red de emergencia \"%s\" activa -> http://192.168.4.1\n", AP_SSID);
+}
+
+void stopFallbackAP() {
+  if (!apActive) return;
+  WiFi.softAPdisconnect(true);          // apaga solo la red propia, el WiFi de casa sigue
+  apActive = false;
+  Serial.println("Red de emergencia desactivada: ya hay WiFi de casa");
+}
+
+// Lista las redes que ve el ESP32 y su señal, para diagnosticar problemas de alcance
+void scanAndReport() {
+  Serial.println("Redes que veo (senal: mejor que -67 buena, -67 a -80 justa, peor que -80 mala):");
+  const int n = WiFi.scanNetworks();
+  bool found = false;
+  for (int i = 0; i < n && i < 10; i++) {
+    const bool mine = (WiFi.SSID(i) == WIFI_SSID);
+    found |= mine;
+    Serial.printf("  %s %-32s %4d dBm  canal %d\n", mine ? ">" : " ",
+                  WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i));
+  }
+  if (!found) {
+    Serial.printf("  \"%s\" no aparece: esta lejos, es de 5 GHz o el nombre no coincide\n", WIFI_SSID);
+  }
+  WiFi.scanDelete();
+}
+
 void checkHomeWifi() {
   const wl_status_t st = WiFi.status();
   if (st != lastStaStatus) {
+    if (lastStaStatus == WL_CONNECTED) staStartMs = millis();   // se cayó: 20 s de margen
     lastStaStatus = st;
     switch (st) {
       case WL_CONNECTED:
-        Serial.printf("WiFi casa: conectado. IP %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("WiFi casa: conectado. IP %s, senal %d dBm\n",
+                      WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        stopFallbackAP();
+        if (infoScreen) drawInfoScreen();
         break;
       case WL_NO_SSID_AVAIL:
         Serial.println("WiFi casa: no encuentro esa red. Revisa el nombre en secrets.h (mayusculas, espacios) y que sea de 2.4 GHz");
@@ -703,7 +774,10 @@ void checkHomeWifi() {
     staGaveUp = true;
     WiFi.setAutoReconnect(false);
     WiFi.disconnect();
-    Serial.println("WiFi casa: sin conexion tras 20 s. Reintento en 5 min (la red ClaWD-Mochi sigue disponible)");
+    Serial.println("WiFi casa: sin conexion tras 20 s. Reintento en 5 min");
+    scanAndReport();
+    startFallbackAP();
+    if (infoScreen) drawInfoScreen();
   } else if (staGaveUp && millis() - staStartMs > STA_RETRY_MS) {
     startHomeWifi();
   }
@@ -1203,13 +1277,24 @@ async function clearAll() {
 //  WEB ROUTES
 // ═════════════════════════════════════════════════════════════
 
+// Pide usuario y contraseña (WEB_USER / WEB_PASS de secrets.h) en cada petición.
+// El navegador los recuerda tras la primera vez. Ojo: sin HTTPS viajan casi en
+// claro por la red local; frena a curiosos, no a alguien ya dentro de tu red.
+bool authOk() {
+  if (server.authenticate(WEB_USER, WEB_PASS)) return true;
+  server.requestAuthentication(BASIC_AUTH, "Clawd Mochi");
+  return false;
+}
+
 void routeRoot() {
+  if (!authOk()) return;
   server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   server.sendHeader("Pragma", "no-cache");
   server.send_P(200, "text/html", INDEX_HTML);
 }
 
 void routeCmd() {
+  if (!authOk()) return;
   if (!server.hasArg("k") || server.arg("k").isEmpty()) {
     server.send(400, "application/json", "{\"e\":1}"); return;
   }
@@ -1237,6 +1322,7 @@ void routeCmd() {
 }
 
 void routeChar() {
+  if (!authOk()) return;
   if (!termMode) { server.send(200, "application/json", "{\"ok\":1}"); return; }
   const String val = server.arg("c");
   if (val.length() > 0) termAddChar(val[0]);
@@ -1244,12 +1330,14 @@ void routeChar() {
 }
 
 void routeSpeed() {
+  if (!authOk()) return;
   if (server.hasArg("v")) animSpeed = constrain(server.arg("v").toInt(), 1, 3);
   server.send(200, "application/json", "{\"ok\":1}");
 }
 
 // /redraw?bg=hex — set animBg and immediately redraw current view
 void routeRedraw() {
+  if (!authOk()) return;
   if (server.hasArg("bg")) {
     animBgColor = hexToRgb565(server.arg("bg"));
     drawBgColor = animBgColor;
@@ -1265,6 +1353,7 @@ void routeRedraw() {
 }
 
 void routeCanvas() {
+  if (!authOk()) return;
   const bool on = server.hasArg("on") && server.arg("on") == "1";
   canvasActive = on; infoScreen = false;
   if (on) { currentView = VIEW_DRAW; tft.fillScreen(drawBgColor); }
@@ -1272,6 +1361,7 @@ void routeCanvas() {
 }
 
 void routeDrawClear() {
+  if (!authOk()) return;
   const String bg = server.hasArg("bg") ? server.arg("bg") : "#aa4818";
   drawBgColor = hexToRgb565(bg);
   animBgColor = drawBgColor;  // keep in sync
@@ -1282,6 +1372,7 @@ void routeDrawClear() {
 }
 
 void routeDrawStroke() {
+  if (!authOk()) return;
   if (!server.hasArg("pts") || !server.hasArg("pen")) {
     server.send(200, "application/json", "{\"ok\":1}"); return;
   }
@@ -1316,6 +1407,7 @@ void routeDrawStroke() {
 }
 
 void routeBacklight() {
+  if (!authOk()) return;
   setBacklight(server.hasArg("on") && server.arg("on") == "1");
   server.send(200, "application/json", "{\"ok\":1}");
 }
@@ -1331,6 +1423,7 @@ String rgb565ToHex(uint16_t c) {
 }
 
 void routeState() {
+  if (!authOk()) return;
   String j = "{\"view\":"; j += currentView;
   j += ",\"busy\":";   j += busy        ? "true" : "false";
   j += ",\"term\":";   j += termMode    ? "true" : "false";
@@ -1369,29 +1462,17 @@ void setup() {
   animLogoReveal();
 
   // ── Start WiFi ─────────────────────────────────────────────
-  // AP + STA: crea su red (control desde el móvil) y a la vez se conecta
-  // a tu WiFi de casa (para tener internet y saber la hora)
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(AP_SSID, AP_PASS);
+  // Solo WiFi de casa; la red ClaWD-Mochi se crea si falla (ver checkHomeWifi)
+  WiFi.persistent(false);         // no guardar otra copia de la clave en la memoria
+  WiFi.mode(WIFI_STA);
   // La antena de la ESP32-C3 Super Mini funciona mal a la potencia máxima
   // de fábrica: ni conecta al router ni se ve su red. Bajarla lo arregla.
   WiFi.setTxPower(WIFI_POWER_8_5dBm);
   startHomeWifi();
   configTzTime(TZ_SPAIN, "pool.ntp.org", "time.google.com");
 
-  // ── WiFi info screen (stays until first web request) ───────
-  tft.fillScreen(C_DARKBG);
-  tft.fillRect(0, 0, DISP_W, 4, C_ORANGE);
-  tft.setTextColor(C_WHITE);  tft.setTextSize(2);
-  tft.setCursor(12, 16);  tft.print("WiFi: ClaWD-Mochi");
-  tft.setTextColor(C_MUTED);  tft.setTextSize(1);
-  tft.setCursor(12, 44);  tft.print("password: clawd1234");
-  tft.setTextColor(C_WHITE);  tft.setTextSize(2);
-  tft.setCursor(12, 68);  tft.print("Open browser:");
-  tft.setTextColor(C_ORANGE); tft.setTextSize(2);
-  tft.setCursor(12, 94);  tft.print("192.168.4.1");
-  tft.setTextColor(C_MUTED);  tft.setTextSize(1);
-  tft.setCursor(12, 124); tft.print("press any button to start");
+  // ── Pantalla de conexión (se queda hasta el primer toque o botón) ──
+  drawInfoScreen();
 
   // ── Register routes ────────────────────────────────────────
   server.on("/",            HTTP_GET, routeRoot);
@@ -1407,8 +1488,6 @@ void setup() {
   server.onNotFound(routeNotFound);
   server.begin();
 
-  // WiFi info stays on screen — first button press triggers setView/cmd
-  // which will replace it with the correct view
 }
 
 // ═════════════════════════════════════════════════════════════

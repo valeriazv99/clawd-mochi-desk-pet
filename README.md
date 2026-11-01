@@ -67,12 +67,15 @@ Los nombres de la izquierda son los que vienen impresos detrás de la pantalla. 
   ```
 - Librerías (Library Manager): `Adafruit GFX Library`, `Adafruit ILI9341`
 
-**Configurar tu WiFi (para el reloj):**
+**Configurar las contraseñas (`secrets.h`):**
 
-El ESP32 crea su propia red para controlarlo desde el móvil y, a la vez, se conecta a tu WiFi de casa para tener internet y saber la hora. Los datos de tu WiFi van en un archivo aparte que **no se sube a GitHub**:
+Las contraseñas van en un archivo aparte que **no se sube a GitHub**:
 
 1. En la carpeta `clawd_mochi/`, copia `secrets.h.example` con el nombre `secrets.h`. En Arduino IDE también puedes hacerlo desde el menú `⋯` → *New Tab* → `secrets.h`, pegando el contenido del ejemplo
-2. Escribe el nombre y la contraseña de tu WiFi. Tiene que ser de **2.4 GHz**, porque el ESP32-C3 no admite 5 GHz
+2. Rellena:
+   - `WIFI_SSID` / `WIFI_PASS`: tu WiFi de casa. Tiene que ser de **2.4 GHz**, porque el ESP32-C3 no admite 5 GHz
+   - `AP_PASSWORD`: la clave de la red de emergencia (mínimo 8 caracteres, distinta de la de casa)
+   - `WEB_USER` / `WEB_PASS`: el usuario y la contraseña para entrar en la web de control
 
 **Subir el código:**
 1. Abre `clawd_mochi/clawd_mochi.ino` en Arduino IDE
@@ -89,7 +92,10 @@ El ESP32 crea su propia red para controlarlo desde el móvil y, a la vez, se con
 - Terminal ampliado a 21 columnas × 10 filas
 - Lienzo de dibujo de la web a 320×240
 - Squish eyes más anchos y con trazo más grueso
-- Nueva vista **Clock** y WiFi en modo AP + STA
+- Nueva vista **Clock** (hora por internet)
+- WiFi: se conecta a la red de casa y solo crea su propia red si falla. Potencia de emisión reducida por la antena de la Super Mini
+- Web protegida con usuario y contraseña
+- Táctil leído por software en pines propios
 
 Los pines de la pantalla (CS, DC, RST, LED, SCK y MOSI) son los mismos que en el original.
 
@@ -98,11 +104,20 @@ Los pines de la pantalla (CS, DC, RST, LED, SCK y MOSI) son los mismos que en el
 ## 📱 Cómo usarlo
 
 1. Conecta el ESP32-C3 por USB-C a cualquier cargador
-2. Tras la animación de arranque, la pantalla muestra los datos del WiFi
-3. Desde el móvil, conéctate a la red **`ClaWD-Mochi`** (contraseña **`clawd1234`**). Si avisa de que no hay internet, sigue conectada: es una red local del propio ESP32
-4. Abre **`http://192.168.4.1`** en el navegador y pulsa cualquier botón
+2. Tras la animación de arranque, se conecta a tu WiFi de casa y la pantalla muestra su dirección, por ejemplo `http://192.168.1.45`
+3. Desde cualquier dispositivo en tu WiFi, abre esa dirección e inicia sesión con `WEB_USER` / `WEB_PASS`
+4. También puedes tocar la pantalla para cambiar de vista. La IP aparece además abajo en la vista **Clock**
 
-Si está conectado a tu WiFi de casa, la vista **Clock** muestra abajo su IP en esa red. Desde cualquier dispositivo conectado a tu WiFi puedes abrir esa IP y controlarlo sin cambiar de red.
+**Si no consigue conectarse a tu WiFi de casa**, a los 20 segundos crea la red de emergencia **`ClaWD-Mochi`** (clave `AP_PASSWORD`). Conéctate a ella y abre `http://192.168.4.1`. Cada 5 minutos vuelve a intentar conectarse a casa, y en el Serial Monitor (115200) explica por qué falla y qué redes ve con qué señal.
+
+### 🔒 Seguridad
+
+- Las contraseñas están solo en `secrets.h`, que está excluido del repo con `.gitignore`
+- La red propia solo existe como emergencia, con clave propia. El ESP32 no enruta tráfico entre esa red y la de casa
+- La web pide usuario y contraseña. Sin HTTPS viajan casi en claro por la red local: frena a curiosos, no a alguien que ya esté dentro de tu red
+- No hay actualización de firmware por red: solo se puede cambiar por USB
+- Con acceso físico se puede leer la memoria y la clave del WiFi. Antes de regalarlo o tirarlo, borra la memoria desde Arduino IDE (*Tools → Erase All Flash Before Sketch Upload* → *Enabled*, y sube cualquier sketch)
+- Recomendado: conectarlo a una **red de invitados** del router, aislada de tus otros dispositivos
 
 ---
 
