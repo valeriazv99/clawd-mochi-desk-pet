@@ -643,6 +643,57 @@ void nextViewByTouch() {
   }
 }
 
+// ═════════════════════════════════════════════════════════════
+//  WIFI DE CASA — estado, avisos y reintentos
+//  Si el ESP32 no logra conectarse, deja de buscar: mientras busca
+//  salta de canal y la red ClaWD-Mochi se vuelve inestable.
+// ═════════════════════════════════════════════════════════════
+
+#define STA_TIMEOUT_MS  20000UL    // 20 s intentando conectar
+#define STA_RETRY_MS    300000UL   // reintento cada 5 min
+
+unsigned long staStartMs    = 0;
+bool          staGaveUp     = false;
+wl_status_t   lastStaStatus = WL_IDLE_STATUS;
+
+void startHomeWifi() {
+  staStartMs = millis();
+  staGaveUp  = false;
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.printf("WiFi casa: conectando a \"%s\"...\n", WIFI_SSID);
+}
+
+void checkHomeWifi() {
+  const wl_status_t st = WiFi.status();
+  if (st != lastStaStatus) {
+    lastStaStatus = st;
+    switch (st) {
+      case WL_CONNECTED:
+        Serial.printf("WiFi casa: conectado. IP %s\n", WiFi.localIP().toString().c_str());
+        break;
+      case WL_NO_SSID_AVAIL:
+        Serial.println("WiFi casa: no encuentro esa red. Revisa el nombre en secrets.h (mayusculas, espacios) y que sea de 2.4 GHz");
+        break;
+      case WL_CONNECT_FAILED:
+        Serial.println("WiFi casa: la red existe pero no me deja entrar. Revisa la contraseña en secrets.h");
+        break;
+      default: break;
+    }
+  }
+
+  if (st == WL_CONNECTED) { staGaveUp = false; return; }
+
+  if (!staGaveUp && millis() - staStartMs > STA_TIMEOUT_MS) {
+    staGaveUp = true;
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect();
+    Serial.println("WiFi casa: sin conexion tras 20 s. Reintento en 5 min (la red ClaWD-Mochi sigue disponible)");
+  } else if (staGaveUp && millis() - staStartMs > STA_RETRY_MS) {
+    startHomeWifi();
+  }
+}
+
 void handleTouch() {
   if (busy || millis() - lastTouchPoll < 20) return;
   lastTouchPoll = millis();
@@ -1288,7 +1339,7 @@ void setup() {
   // a tu WiFi de casa (para tener internet y saber la hora)
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASS);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  startHomeWifi();
   configTzTime(TZ_SPAIN, "pool.ntp.org", "time.google.com");
 
   // ── WiFi info screen (stays until first web request) ───────
@@ -1330,6 +1381,7 @@ void setup() {
 void loop() {
   server.handleClient();
   handleTouch();
+  checkHomeWifi();
 
   // En la vista de reloj, actualiza una vez por segundo
   if (currentView == VIEW_CLOCK && !busy && millis() - lastClockTick >= 1000) {
