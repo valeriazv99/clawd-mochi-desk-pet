@@ -110,7 +110,7 @@ Si está conectado a tu WiFi de casa, la vista **Clock** muestra abajo su IP en 
 - [x] Prueba de pantalla (`graphicstest`)
 - [x] Código de Clawd Mochi adaptado a ILI9341 320×240
 - [ ] Táctil (XPT2046): cables T_CLK / T_DIN / T_DO y código
-- [ ] Reloj por WiFi (NTP), en pruebas en la rama `issue-7-reloj`
+- [x] Reloj por WiFi (NTP)
 - [ ] Widget del tiempo (OpenWeatherMap)
 - [ ] Carcasa 3D en PLA naranja
 - [ ] Montaje final
