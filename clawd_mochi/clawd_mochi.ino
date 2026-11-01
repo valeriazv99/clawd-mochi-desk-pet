@@ -559,10 +559,10 @@ void animLogoReveal() {
 // Calibración: valores en bruto (0–4095) que da el táctil en cada borde.
 // Se ajustan con lo que sale en el Serial Monitor al tocar las esquinas.
 #define TS_SWAP_XY   true   // la X de la pantalla sale de la Y del táctil
-#define TS_X_LEFT    300    // borde izquierdo
-#define TS_X_RIGHT   3800   // borde derecho
-#define TS_Y_TOP     300    // borde superior
-#define TS_Y_BOTTOM  3800   // borde inferior
+#define TS_X_LEFT    3840   // borde izquierdo   (calibrado: esquinas izq. 3811 / 3865)
+#define TS_X_RIGHT   300    // borde derecho     (esquinas der. 306 / 297)
+#define TS_Y_TOP     3750   // borde superior    (esquinas sup. 3748 / 3749)
+#define TS_Y_BOTTOM  340    // borde inferior    (esquinas inf. 330 / 350)
 #define TS_Z_MIN     400    // presión mínima para contar como toque
 
 bool          wasTouched    = false;
