@@ -128,7 +128,8 @@ Los pines de la pantalla (CS, DC, RST, LED, SCK y MOSI) son los mismos que en el
 - [x] Cableado de la pantalla al ESP32-C3
 - [x] Prueba de pantalla (`graphicstest`)
 - [x] Código de Clawd Mochi adaptado a ILI9341 320×240
-- [ ] Táctil (XPT2046): en pruebas en la rama `issue-6-tactil`
+- [x] Táctil (XPT2046): tocar para cambiar de vista y dibujar con el lápiz
+- [x] Seguridad: red propia solo de emergencia, web con contraseña
 - [x] Reloj por WiFi (NTP)
 - [ ] Widget del tiempo (OpenWeatherMap)
 - [ ] Carcasa 3D en PLA naranja
