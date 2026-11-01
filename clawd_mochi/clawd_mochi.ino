@@ -570,6 +570,7 @@ unsigned long lastTouchPoll = 0;
 unsigned long lastReleaseMs = 0;
 unsigned long lastTouchWarn = 0;
 int16_t       lastDrawX = -1, lastDrawY = -1;
+uint8_t       strokeSamples = 0;   // lecturas desde que se apoyó el lápiz
 
 void touchBegin() {
   pinMode(T_CS_PIN,  OUTPUT); digitalWrite(T_CS_PIN,  HIGH);
@@ -615,10 +616,10 @@ bool touchRead(int &rx, int &ry, int &rz) {
 
   touchCmd(0xD0);                       // la primera lectura es más ruidosa
   long sx = 0, sy = 0;
-  for (uint8_t i = 0; i < 4; i++) { sx += touchCmd(0xD0); sy += touchCmd(0x90); }
+  for (uint8_t i = 0; i < 8; i++) { sx += touchCmd(0xD0); sy += touchCmd(0x90); }
   digitalWrite(T_CS_PIN, HIGH);
-  rx = sx / 4;
-  ry = sy / 4;
+  rx = sx / 8;                          // media de 8 lecturas = trazo más suave
+  ry = sy / 8;
   return true;
 }
 
@@ -711,20 +712,28 @@ void handleTouch() {
     }
 
     if (canvasActive) {                 // lienzo abierto: dibujar con el dedo
-      if (lastDrawX >= 0) {
+      strokeSamples++;
+      if (strokeSamples == 1) {
+        // Primera lectura al apoyar: hay poca presión y suele ser errónea → se descarta
+      } else if (lastDrawX < 0) {
+        tft.fillRect(sx, sy, 2, 2, penColor);   // inicio del trazo, mismo grosor que la línea
+        lastDrawX = sx; lastDrawY = sy;
+      } else if (abs(sx - lastDrawX) > 50 || abs(sy - lastDrawY) > 50) {
+        // Salto imposible en 20 ms: lectura errónea. No se une con línea
+        lastDrawX = sx; lastDrawY = sy;
+      } else {
         tft.drawLine(lastDrawX, lastDrawY, sx, sy, penColor);
         tft.drawLine(lastDrawX + 1, lastDrawY, sx + 1, sy, penColor);
         tft.drawLine(lastDrawX, lastDrawY + 1, sx, sy + 1, penColor);
-      } else {
-        tft.fillCircle(sx, sy, 2, penColor);
+        lastDrawX = sx; lastDrawY = sy;
       }
-      lastDrawX = sx; lastDrawY = sy;
     } else if (!wasTouched && millis() - lastReleaseMs > 150) {
       nextViewByTouch();                // toque nuevo → siguiente vista
     }
   } else if (wasTouched) {
     lastReleaseMs = millis();
     lastDrawX = -1;
+    strokeSamples = 0;
   }
   wasTouched = touched;
 }
