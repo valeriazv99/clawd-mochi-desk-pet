@@ -16,6 +16,7 @@ Adaptación del proyecto original [yousifamanuel/clawd-mochi](https://github.com
 - **Squish eyes**: los ojos `> <` de cangrejo contento
 - **Claude Code**: pantalla con terminal en la que escribes desde el móvil
 - **Canvas**: dibuja en la pantalla desde el móvil en tiempo real
+- **Clock**: hora y fecha sincronizadas por internet, con el cambio de hora de España automático
 - **Controles**: velocidad de animación, color de fondo y encender/apagar la pantalla
 
 ---
@@ -62,6 +63,13 @@ Los nombres de la izquierda son los que vienen impresos detrás de la pantalla. 
   ```
 - Librerías (Library Manager): `Adafruit GFX Library`, `Adafruit ILI9341`
 
+**Configurar tu WiFi (para el reloj):**
+
+El ESP32 crea su propia red para controlarlo desde el móvil y, a la vez, se conecta a tu WiFi de casa para tener internet y saber la hora. Los datos de tu WiFi van en un archivo aparte que **no se sube a GitHub**:
+
+1. En la carpeta `clawd_mochi/`, copia `secrets.h.example` con el nombre `secrets.h`. En Arduino IDE también puedes hacerlo desde el menú `⋯` → *New Tab* → `secrets.h`, pegando el contenido del ejemplo
+2. Escribe el nombre y la contraseña de tu WiFi. Tiene que ser de **2.4 GHz**, porque el ESP32-C3 no admite 5 GHz
+
 **Subir el código:**
 1. Abre `clawd_mochi/clawd_mochi.ino` en Arduino IDE
 2. *Tools → Board* → **ESP32C3 Dev Module**
@@ -76,6 +84,8 @@ Los nombres de la izquierda son los que vienen impresos detrás de la pantalla. 
 - Logo desplazado 40 px para que quede centrado en el ancho extra
 - Terminal ampliado a 21 columnas × 10 filas
 - Lienzo de dibujo de la web a 320×240
+- Squish eyes más anchos y con trazo más grueso
+- Nueva vista **Clock** y WiFi en modo AP + STA
 
 Los pines de la pantalla (CS, DC, RST, LED, SCK y MOSI) son los mismos que en el original.
 
@@ -88,6 +98,8 @@ Los pines de la pantalla (CS, DC, RST, LED, SCK y MOSI) son los mismos que en el
 3. Desde el móvil, conéctate a la red **`ClaWD-Mochi`** (contraseña **`clawd1234`**). Si avisa de que no hay internet, sigue conectada: es una red local del propio ESP32
 4. Abre **`http://192.168.4.1`** en el navegador y pulsa cualquier botón
 
+Si está conectado a tu WiFi de casa, la vista **Clock** muestra abajo su IP en esa red. Desde cualquier dispositivo conectado a tu WiFi puedes abrir esa IP y controlarlo sin cambiar de red.
+
 ---
 
 ## 🗺️ Roadmap
@@ -98,7 +110,7 @@ Los pines de la pantalla (CS, DC, RST, LED, SCK y MOSI) son los mismos que en el
 - [x] Prueba de pantalla (`graphicstest`)
 - [x] Código de Clawd Mochi adaptado a ILI9341 320×240
 - [ ] Táctil (XPT2046): cables T_CLK / T_DIN / T_DO y código
-- [ ] Reloj por WiFi (NTP)
+- [ ] Reloj por WiFi (NTP), en pruebas en la rama `issue-7-reloj`
 - [ ] Widget del tiempo (OpenWeatherMap)
 - [ ] Carcasa 3D en PLA naranja
 - [ ] Montaje final

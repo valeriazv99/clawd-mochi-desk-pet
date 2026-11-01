@@ -24,6 +24,11 @@
 #include <math.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <time.h>
+#include "secrets.h"   // WIFI_SSID y WIFI_PASS de tu casa (no se sube a GitHub)
+
+// Zona horaria de España peninsular, con cambio de hora automático
+#define TZ_SPAIN "CET-1CEST,M3.5.0,M10.5.0/3"
 
 // ── Pins ──────────────────────────────────────────────────────
 #define TFT_CS  4
@@ -62,6 +67,7 @@ uint16_t C_ORANGE, C_DARKBG, C_MUTED, C_GREEN;
 #define VIEW_EYES_SQUISH 1
 #define VIEW_CODE        2
 #define VIEW_DRAW        3
+#define VIEW_CLOCK       4
 
 uint8_t  currentView  = VIEW_EYES_NORMAL;
 bool     busy         = false;
@@ -282,7 +288,7 @@ void drawSquishEyes(bool closed = false) {
   tft.fillScreen(animBgColor);
   const int16_t lx = eyeLX(0), rx = eyeRX(0), cy = eyeCY();
   const int16_t arm   = EYE_H / 2;
-  const int16_t reach = EYE_W / 2;
+  const int16_t reach = EYE_W + 10;   // más ancho → trazo más grueso
   const int16_t lcx   = lx + EYE_W / 2;
   const int16_t rcx   = rx + EYE_W / 2;
   if (!closed) {
@@ -304,6 +310,84 @@ void drawCodeView() {
   tft.setTextColor(C_WHITE);  tft.setTextSize(4);
   tft.setCursor((DISP_W - 96) / 2,  DISP_H / 2 + 8);  tft.print("Code");
   tft.fillRect((DISP_W - 96) / 2, DISP_H / 2 + 52, 96, 3, C_ORANGE);
+}
+
+// ═════════════════════════════════════════════════════════════
+//  RELOJ
+// ═════════════════════════════════════════════════════════════
+
+const char* DIAS[]  = {"dom", "lun", "mar", "mie", "jue", "vie", "sab"};
+const char* MESES[] = {"ene", "feb", "mar", "abr", "may", "jun",
+                       "jul", "ago", "sep", "oct", "nov", "dic"};
+
+#define CLOCK_SIZE 8                              // cada carácter: 48×64 px
+#define CLOCK_CW   (6 * CLOCK_SIZE)
+#define CLOCK_CH   (8 * CLOCK_SIZE)
+#define CLOCK_X    ((DISP_W - 5 * CLOCK_CW) / 2)  // "HH:MM" centrado
+#define CLOCK_Y    56
+#define DATE_SIZE  3                              // cada carácter: 18×24 px
+#define DATE_Y     (CLOCK_Y + CLOCK_CH + 26)
+
+int           lastClockMin  = -1;
+bool          colonOn       = true;
+unsigned long lastClockTick = 0;
+
+void drawClockFooter() {
+  tft.fillRect(0, DISP_H - 24, DISP_W, 18, C_DARKBG);
+  tft.setTextSize(1);
+  tft.setTextColor(C_MUTED, C_DARKBG);
+  tft.setCursor(8, DISP_H - 18);
+  if (WiFi.status() == WL_CONNECTED) {
+    tft.print("WiFi casa: "); tft.print(WiFi.localIP());
+  } else {
+    tft.print("Sin WiFi de casa - revisa secrets.h");
+  }
+}
+
+// full = true → dibuja la vista desde cero; false → solo actualiza lo que cambia
+void drawClockView(bool full) {
+  if (full) {
+    tft.fillScreen(C_DARKBG);
+    tft.fillRect(0, 0,          DISP_W, 4, C_ORANGE);
+    tft.fillRect(0, DISP_H - 4, DISP_W, 4, C_ORANGE);
+    lastClockMin = -1;
+  }
+
+  struct tm t;
+  if (!getLocalTime(&t, 10)) {   // 10 ms de espera máx. para no bloquear la web
+    if (full) {
+      tft.setTextSize(2); tft.setTextColor(C_WHITE, C_DARKBG);
+      tft.setCursor((DISP_W - 21 * 12) / 2, DISP_H / 2 - 8);
+      tft.print("Sincronizando hora...");
+    }
+    drawClockFooter();
+    return;
+  }
+
+  if (t.tm_min != lastClockMin) {
+    if (lastClockMin == -1) tft.fillRect(0, 4, DISP_W, DISP_H - 8, C_DARKBG);
+    lastClockMin = t.tm_min;
+
+    char hhmm[8];
+    snprintf(hhmm, sizeof(hhmm), "%02d:%02d", t.tm_hour, t.tm_min);
+    tft.setTextSize(CLOCK_SIZE); tft.setTextColor(C_WHITE, C_DARKBG);
+    tft.setCursor(CLOCK_X, CLOCK_Y); tft.print(hhmm);
+
+    char fecha[32];
+    snprintf(fecha, sizeof(fecha), "%s %d %s %d",
+             DIAS[t.tm_wday], t.tm_mday, MESES[t.tm_mon], t.tm_year + 1900);
+    tft.fillRect(0, DATE_Y, DISP_W, 8 * DATE_SIZE, C_DARKBG);
+    tft.setTextSize(DATE_SIZE); tft.setTextColor(C_ORANGE, C_DARKBG);
+    tft.setCursor((DISP_W - (int)strlen(fecha) * 6 * DATE_SIZE) / 2, DATE_Y);
+    tft.print(fecha);
+
+    drawClockFooter();
+  }
+
+  // Los dos puntos parpadean cada segundo
+  tft.setTextSize(CLOCK_SIZE);
+  tft.setTextColor(colonOn ? C_WHITE : C_DARKBG, C_DARKBG);
+  tft.setCursor(CLOCK_X + 2 * CLOCK_CW, CLOCK_Y); tft.print(':');
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -512,6 +596,7 @@ body{background:#1c1c20;font-family:'Courier New',monospace;color:#e8e4dc;
 .vbtn[data-v="1"].active{border-color:#c96a3e;background:#201408}
 .vbtn[data-v="2"].active{border-color:#4a8acd;background:#0c1628}
 .vbtn[data-v="3"].active{border-color:#38343a;background:#201c18}
+.vbtn[data-v="4"]{grid-column:span 2}
 
 /* Speed slider */
 .speed-row{width:100%;max-width:390px;display:flex;align-items:center;gap:10px}
@@ -598,6 +683,11 @@ canvas{width:100%;border-radius:8px;border:1.5px solid #38343a;
     <span class="ic">&#11035;</span>
     <span class="nm">Canvas</span>
     <span class="ht">draw on display</span>
+  </button>
+  <button class="vbtn" data-v="4" onclick="setView(4)">
+    <span class="ic">&#9719;</span>
+    <span class="nm">Clock</span>
+    <span class="ht">time + date</span>
   </button>
 </div>
 
@@ -716,7 +806,7 @@ async function setSpeed(v) {
 async function setView(v) {
   if (isBusy || termOpen || canvasOpen) return;
   if (v === 3) { toggleCanvas(); return; }  // canvas button in grid
-  const keys = ['w','s','d'];
+  const keys = {0:'w', 1:'s', 2:'d', 4:'c'};
   if (!await req('/cmd?k=' + keys[v])) return;
   activeView = v;
   document.querySelectorAll('.vbtn').forEach(b =>
@@ -914,6 +1004,7 @@ void routeCmd() {
     case 'd':
       currentView = VIEW_CODE; drawCodeView();
       termMode = true; termClear(); termFullRedraw(); break;
+    case 'c': currentView = VIEW_CLOCK; drawClockView(true); break;
     case 'a':
       currentView = VIEW_EYES_NORMAL;
       animLogoReveal();
@@ -944,6 +1035,7 @@ void routeRedraw() {
     case VIEW_EYES_SQUISH: drawSquishEyes(); break;
     case VIEW_CODE:        drawCodeView();   break;
     case VIEW_DRAW:        tft.fillScreen(drawBgColor); break;
+    case VIEW_CLOCK:       drawClockView(true); break;
   }
   server.send(200, "application/json", "{\"ok\":1}");
 }
@@ -1049,8 +1141,12 @@ void setup() {
   animLogoReveal();
 
   // ── Start WiFi ─────────────────────────────────────────────
-  WiFi.mode(WIFI_AP);
+  // AP + STA: crea su red (control desde el móvil) y a la vez se conecta
+  // a tu WiFi de casa (para tener internet y saber la hora)
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASS);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  configTzTime(TZ_SPAIN, "pool.ntp.org", "time.google.com");
 
   // ── WiFi info screen (stays until first web request) ───────
   tft.fillScreen(C_DARKBG);
@@ -1088,4 +1184,13 @@ void setup() {
 //  LOOP
 // ═════════════════════════════════════════════════════════════
 
-void loop() { server.handleClient(); }
+void loop() {
+  server.handleClient();
+
+  // En la vista de reloj, actualiza una vez por segundo
+  if (currentView == VIEW_CLOCK && !busy && millis() - lastClockTick >= 1000) {
+    lastClockTick = millis();
+    colonOn = !colonOn;
+    drawClockView(false);
+  }
+}
