@@ -661,6 +661,7 @@ void startHomeWifi() {
   staGaveUp  = false;
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);   // ver nota en setup()
   Serial.printf("WiFi casa: conectando a \"%s\"...\n", WIFI_SSID);
 }
 
@@ -1339,6 +1340,9 @@ void setup() {
   // a tu WiFi de casa (para tener internet y saber la hora)
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASS);
+  // La antena de la ESP32-C3 Super Mini funciona mal a la potencia máxima
+  // de fábrica: ni conecta al router ni se ve su red. Bajarla lo arregla.
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
   startHomeWifi();
   configTzTime(TZ_SPAIN, "pool.ntp.org", "time.google.com");
 
